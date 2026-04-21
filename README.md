@@ -36,10 +36,10 @@ Mission:
 ```mermaid
 flowchart LR
     UI[React Web App\nAgenticControlPlane.Web] -->|/api| API[ASP.NET Core API\nAgenticControlPlane.Api]
-    API --> DASH[/api/dashboard\nrepo docs + workflows scan/]
-    API --> PORT[/api/portfolio\nsingle repo view/]
-    API --> WORK[/api/workspace\nmulti-repo aggregate/]
-    API --> SYNCSTAT[/api/sync/status/]
+    API --> DASH["/api/dashboard - repo docs + workflows scan"]
+    API --> PORT["/api/portfolio - single repo view"]
+    API --> WORK["/api/workspace - multi-repo aggregate"]
+    API --> SYNCSTAT["/api/sync/status"]
 
     API --> CACHE[(PortfolioCache\nin-memory snapshots)]
     WORKER[SyncWorker\nBackgroundService] --> CACHE
@@ -55,7 +55,7 @@ flowchart TD
     B --> C[Normalize PR model]
     C --> D[Classify lane + decision]
     D --> E[Store RepoSnapshot in cache]
-    E --> F[/api/portfolio and /api/workspace read cache]
+    E --> F["/api/portfolio and /api/workspace read cache"]
 ```
 
 ## Stack
