@@ -1,0 +1,134 @@
+name: Staged Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to release (branch, tag, or SHA)
+        required: true
+        default: main
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      canary_percentage:
+        description: Canary percentage (1-100)
+        required: true
+        default: "10"
+      approve_full_rollout:
+        description: Set true to continue from canary to full rollout
+        required: true
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staged-release-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  validate-inputs:
+    name: Validate Release Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.capture.outputs.ref }}
+      environment: ${{ steps.capture.outputs.environment }}
+      canary: ${{ steps.capture.outputs.canary }}
+      full: ${{ steps.capture.outputs.full }}
+    steps:
+      - name: Validate canary value and capture inputs
+        id: capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary="${{ inputs.canary_percentage }}"
+          if ! [[ "$canary" =~ ^[0-9]+$ ]]; then
+            echo "canary_percentage must be an integer" >&2
+            exit 1
+          fi
+          if [ "$canary" -lt 1 ] || [ "$canary" -gt 100 ]; then
+            echo "canary_percentage must be between 1 and 100" >&2
+            exit 1
+          fi
+
+          full="${{ inputs.approve_full_rollout }}"
+          if [ "$full" != "true" ] && [ "$full" != "false" ]; then
+            echo "approve_full_rollout must be true or false" >&2
+            exit 1
+          fi
+
+          echo "ref=${{ inputs.ref }}" >> "$GITHUB_OUTPUT"
+          echo "environment=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          echo "canary=$canary" >> "$GITHUB_OUTPUT"
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+
+  deploy-canary:
+    name: Deploy Canary
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    environment: ${{ needs.validate-inputs.outputs.environment }}
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-inputs.outputs.ref }}
+
+      - name: Run canary deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Deploying canary to ${{ needs.validate-inputs.outputs.environment }}"
+          echo "Canary percentage: ${{ needs.validate-inputs.outputs.canary }}%"
+          # TODO: Replace with your deployment command.
+          # Example:
+          # ./scripts/deploy.sh --env "${{ needs.validate-inputs.outputs.environment }}" --traffic "${{ needs.validate-inputs.outputs.canary }}"
+
+  verify-canary:
+    name: Verify Canary
+    runs-on: ubuntu-latest
+    needs: deploy-canary
+    steps:
+      - name: Verify canary health signals
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Run smoke tests and SLO checks here."
+          # TODO: Replace with real checks.
+          # Example:
+          # ./scripts/smoke-test.sh
+          # ./scripts/check-slo-regression.sh
+
+  deploy-full:
+    name: Deploy Full Rollout
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, verify-canary]
+    if: needs.validate-inputs.outputs.full == 'true'
+    environment: ${{ needs.validate-inputs.outputs.environment }}
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-inputs.outputs.ref }}
+
+      - name: Run full deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Promoting canary to full rollout in ${{ needs.validate-inputs.outputs.environment }}"
+          # TODO: Replace with your production promotion command.
+          # Example:
+          # ./scripts/deploy.sh --env "${{ needs.validate-inputs.outputs.environment }}" --traffic 100
+
+  hold-after-canary:
+    name: Hold After Canary
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, verify-canary]
+    if: needs.validate-inputs.outputs.full != 'true'
+    steps:
+      - name: Await explicit full rollout approval
+        run: |
+          echo "Canary complete. Re-run this workflow with approve_full_rollout=true to continue."

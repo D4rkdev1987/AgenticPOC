@@ -1,0 +1,123 @@
+name: Agentic Delivery Gates
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  classify-pr:
+    name: Classify PR by Branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply lifecycle labels from branch naming
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const headRef = context.payload.pull_request.head.ref;
+
+            const labelsToAdd = [];
+
+            if (headRef.startsWith('exp/')) labelsToAdd.push('experiment');
+            if (headRef.startsWith('harden/')) labelsToAdd.push('hardened');
+            if (headRef.startsWith('hotfix/')) labelsToAdd.push('high-risk-change');
+
+            if (labelsToAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number,
+                labels: labelsToAdd,
+              });
+            }
+
+  enforce-agentic-policy:
+    name: Enforce Agentic PR Policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate branch routing and PR body requirements
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const headRef = pr.head.ref;
+            const baseRef = pr.base.ref;
+            const body = pr.body || '';
+
+            const isExperiment = headRef.startsWith('exp/');
+            const isHardening = headRef.startsWith('harden/');
+
+            const failures = [];
+
+            // Prevent direct experiment merges into main.
+            if (isExperiment && baseRef === 'main') {
+              failures.push('Experiment branches (exp/*) cannot merge directly into main. Promote through a hardening branch first.');
+            }
+
+            // Required sections for experiment and hardening PRs.
+            if (isExperiment || isHardening) {
+              const requiredHeadings = [
+                '## Feature Flag and Rollback (required)',
+                '## Testing',
+                '## Rollout Plan',
+              ];
+
+              for (const heading of requiredHeadings) {
+                if (!body.includes(heading)) {
+                  failures.push(`Missing required section: "${heading}"`);
+                }
+              }
+
+              const requiredPrompts = [
+                'Feature flag name:',
+                'Rollback method:',
+                'Manual verification notes:',
+                'Stop conditions:',
+              ];
+
+              for (const prompt of requiredPrompts) {
+                const idx = body.indexOf(prompt);
+                if (idx === -1) {
+                  failures.push(`Missing required field prompt: "${prompt}"`);
+                  continue;
+                }
+
+                const after = body.slice(idx + prompt.length, idx + prompt.length + 120).trim();
+                if (!after || after.startsWith('- [ ]')) {
+                  failures.push(`Required field appears empty: "${prompt}"`);
+                }
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(`Agentic policy failed:\n- ${failures.join('\n- ')}`);
+            }
+
+  hardening-review-floor:
+    name: Hardening Review Floor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require at least one approval marker for hardening PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const headRef = pr.head.ref;
+            const body = pr.body || '';
+
+            if (!headRef.startsWith('harden/')) {
+              core.info('Not a hardening PR. Skipping approval marker gate.');
+              return;
+            }
+
+            // This lightweight gate ensures teams explicitly think through promotion readiness.
+            // Full reviewer-count enforcement should still be configured in branch protection settings.
+            if (!body.includes('## Promotion Checklist (required for hardening/production)')) {
+              core.setFailed('Hardening PR must include the promotion checklist section.');
+            }

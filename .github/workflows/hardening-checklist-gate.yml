@@ -1,0 +1,53 @@
+name: Hardening Checklist Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  hardening-checklist:
+    name: Validate Hardening Checklist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce required hardening checkboxes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const headRef = pr.head.ref;
+            const body = pr.body || '';
+
+            if (!headRef.startsWith('harden/')) {
+              core.info('Not a hardening PR. Skipping hardening checklist gate.');
+              return;
+            }
+
+            const failures = [];
+
+            if (!body.includes('## Promotion Checklist (required for hardening/production)')) {
+              failures.push('Missing section: "## Promotion Checklist (required for hardening/production)"');
+            }
+
+            const requiredChecks = [
+              'Product validation complete',
+              'Engineering quality complete',
+              'Security baseline complete',
+              'CI checks green',
+              'Owners identified for rollout and monitoring',
+            ];
+
+            for (const item of requiredChecks) {
+              const escaped = item.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const checkedPattern = new RegExp(`- \\[xX\\] ${escaped}`);
+              if (!checkedPattern.test(body)) {
+                failures.push(`Required checklist item is not checked: "${item}"`);
+              }
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(`Hardening checklist gate failed:\n- ${failures.join('\n- ')}`);
+            }

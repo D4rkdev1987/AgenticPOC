@@ -1,0 +1,170 @@
+name: Promotion Readiness Score
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  score-hardening-pr:
+    name: Score Hardening Promotion Readiness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate readiness score and comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = pr.number;
+            const headRef = pr.head.ref;
+            const body = pr.body || '';
+
+            if (!headRef.startsWith('harden/')) {
+              core.info('Not a hardening PR. Skipping readiness scoring.');
+              return;
+            }
+
+            function hasHeading(heading) {
+              return body.includes(heading);
+            }
+
+            function hasCheckedItem(itemText) {
+              const escaped = itemText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const checkedPattern = new RegExp(`- \\[xX\\] ${escaped}`);
+              return checkedPattern.test(body);
+            }
+
+            function fieldHasValue(label) {
+              const idx = body.indexOf(label);
+              if (idx === -1) return false;
+              const lineStart = idx + label.length;
+              const lineEnd = body.indexOf('\n', lineStart) === -1 ? body.length : body.indexOf('\n', lineStart);
+              const value = body.slice(lineStart, lineEnd).trim();
+              if (!value) return false;
+              if (value === 'TBD' || value === 'N/A') return false;
+              return true;
+            }
+
+            // Weighted rubric totals 100.
+            const rubric = [
+              {
+                category: 'Product validation',
+                weight: 20,
+                passed: hasCheckedItem('Product validation complete')
+              },
+              {
+                category: 'Engineering quality',
+                weight: 20,
+                passed: hasCheckedItem('Engineering quality complete')
+              },
+              {
+                category: 'Security baseline',
+                weight: 20,
+                passed: hasCheckedItem('Security baseline complete')
+              },
+              {
+                category: 'Operational readiness',
+                weight: 20,
+                passed:
+                  hasHeading('## Feature Flag and Rollback (required)') &&
+                  fieldHasValue('Feature flag name:') &&
+                  fieldHasValue('Rollback method:')
+              },
+              {
+                category: 'Rollout clarity',
+                weight: 20,
+                passed:
+                  hasHeading('## Rollout Plan') &&
+                  fieldHasValue('Rollout strategy (dark launch, percentage, cohort):') &&
+                  fieldHasValue('Stop conditions:') &&
+                  fieldHasValue('Owner on point:')
+              }
+            ];
+
+            const score = rubric.filter(r => r.passed).reduce((sum, r) => sum + r.weight, 0);
+
+            const mustPassCategories = [
+              'Security baseline',
+              'Operational readiness',
+              'Rollout clarity'
+            ];
+            const criticalFailures = rubric
+              .filter(r => mustPassCategories.includes(r.category) && !r.passed)
+              .map(r => r.category);
+
+            let recommendation = 'Block';
+            if (score >= 85) recommendation = 'Promote';
+            else if (score >= 70) recommendation = 'Promote with caution';
+            else if (score >= 50) recommendation = 'Needs one focused iteration';
+
+            if (criticalFailures.length > 0) {
+              recommendation = 'Block (critical category failure)';
+            }
+
+            const rows = rubric.map(r => {
+              const mark = r.passed ? 'PASS' : 'FAIL';
+              return `| ${r.category} | ${r.weight} | ${mark} |`;
+            }).join('\n');
+
+            const commentBody = [
+              '### Promotion Readiness Score',
+              '',
+              `- Score: **${score}/100**`,
+              `- Recommendation: **${recommendation}**`,
+              '',
+              '| Category | Weight | Result |',
+              '|---|---:|---|',
+              rows,
+              '',
+              'Thresholds:',
+              '- 85-100: Promote',
+              '- 70-84: Promote with caution',
+              '- 50-69: Needs one focused iteration',
+              '- <50: Block',
+              '',
+              'Must-pass categories:',
+              '- Security baseline',
+              '- Operational readiness',
+              '- Rollout clarity',
+              '',
+              `- Critical failures: ${criticalFailures.length > 0 ? criticalFailures.join(', ') : 'None'}`,
+              '',
+              '_Generated automatically by Promotion Readiness Score workflow._'
+            ].join('\n');
+
+            const marker = '### Promotion Readiness Score';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body: commentBody,
+              });
+              core.info('Updated existing readiness score comment.');
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body: commentBody,
+              });
+              core.info('Created new readiness score comment.');
+            }
+
+            if (criticalFailures.length > 0) {
+              core.setFailed(`Critical promotion category failure: ${criticalFailures.join(', ')}`);
+            }
